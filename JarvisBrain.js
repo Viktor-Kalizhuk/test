@@ -284,7 +284,20 @@ class JarvisBrain {
                         messages.push(assistantMessage); // Сохраняем вызов в историю
 
                         const calls = assistantMessage.tool_calls || [];
-
+                        // Перед проверкой if (calls.length === 0)
+                        if (assistantMessage.content && assistantMessage.content.includes('```json')) {
+                            try {
+                                const jsonMatch = assistantMessage.content.match(/```json\s*([\s\S]*?)\s*```/);
+                                if (jsonMatch) {
+                                    const fakeToolCall = JSON.parse(jsonMatch[1]);
+                                    // Если внутри есть target и text — это наш relayExternalMessage
+                                    if (fakeToolCall.target && fakeToolCall.text) {
+                                        console.log("[Jarvis Fix] Перехвачен текстовый вызов инструмента!");
+                                        // Здесь вызываем команду вручную или подменяем calls
+                                    }
+                                }
+                            } catch (e) { /* не JSON */ }
+                        }
                         if (calls.length === 0) {
                             simpleSpeech = assistantMessage.content || "";
                             break; 
@@ -407,6 +420,12 @@ class JarvisBrain {
                         inputText, 
                         `Ответ сформирован: "${simpleSpeech}"`
                     );
+                    if (!isRelayExecuted) {
+                        console.log(`[Jarvis] Прямая отправка текста: ${simpleSpeech}`);
+                        await this.context.bitrix.sendMessage(data.chatId.toString(), simpleSpeech);
+                    } else {
+                        console.log(`[Jarvis] Сообщение уже ушло через relay, повторно не шлем.`);
+                    }
                     // 1. Сначала сохраняем в историю БД, чтобы getChatContext увидел это при следующем запросе
                     // await this.saveToHistory(data.chatId.toString(), 'assistant', simpleSpeech);
                     // console.log(`[Jarvis] Ответ для внешнего пользователя ${data.chatId.toString()} сохранен в БД.`);
