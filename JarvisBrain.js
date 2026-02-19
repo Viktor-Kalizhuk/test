@@ -385,11 +385,12 @@ class JarvisBrain {
                 // simpleSpeech = simpleSpeech.replace(/<\|.*?\|>/g, '').trim();
                 // simpleSpeech = simpleSpeech.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<\|.*?\|>/g, '').trim();
                 simpleSpeech = simpleSpeech
-                .replace(/<think>[\s\S]*?<\/think>/g, '') // Убираем мысли
-                .replace(/<\|.*?\|>/g, '')                // Убираем токены
-                .replace(/^ronger/i, '')                  // Убираем этот странный префикс
+                .replace(/<｜.*?｜>/g, '')         // Вырезает теги <｜...｜>
+                .replace(/<\|.*?｜>/g, '')         // Вырезает теги <|...|>
+                .replace(/<think>[\s\S]*?<\/think>/g, '') // Вырезает мысли
+                .replace(/[a-zA-Zа-яА-Я]*?relayExternalMessage/gi, '') // Убирает "похађаrelayExternalMessage"
+                .replace(/\{[\s\S]*?"target"[\s\S]*?\}/g, '') // Убирает JSON, если он вылез в текст
                 .trim();
-
 
                 // Улучшенная логика: если ИИ не выдал текст (например, застрял на чтении файла)
                 if (!simpleSpeech && lastActionResult) {
