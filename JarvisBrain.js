@@ -284,19 +284,23 @@ class JarvisBrain {
                         messages.push(assistantMessage); // Сохраняем вызов в историю
 
                         const calls = assistantMessage.tool_calls || [];
-                        // Перед проверкой if (calls.length === 0)
                         if (assistantMessage.content && assistantMessage.content.includes('```json')) {
-                            try {
-                                const jsonMatch = assistantMessage.content.match(/```json\s*([\s\S]*?)\s*```/);
-                                if (jsonMatch) {
-                                    const fakeToolCall = JSON.parse(jsonMatch[1]);
-                                    // Если внутри есть target и text — это наш relayExternalMessage
-                                    if (fakeToolCall.target && fakeToolCall.text) {
-                                        console.log("[Jarvis Fix] Перехвачен текстовый вызов инструмента!");
-                                        // Здесь вызываем команду вручную или подменяем calls
+                            const jsonMatch = assistantMessage.content.match(/```json\s*([\s\S]*?)\s*```/);
+                            if (jsonMatch) {
+                                try {
+                                    const fakeArgs = JSON.parse(jsonMatch[1]); // Берем первую группу захвата
+                                    if (fakeArgs.text && fakeArgs.target) {
+                                        console.log("[Jarvis Fix] Принудительная отправка из Markdown JSON");
+                                        const result = await COMMANDS_MANIFEST.relayExternalMessage.action(this.context || this, inputText, { 
+                                            ...fakeArgs, 
+                                            autor: "J.A.R.V.I.S." // Принудительно ставим имя бота
+                                        });
+                                        isRelayExecuted = true;
+                                        simpleSpeech = typeof result === 'string' ? result : "Отправлено через фикс";
+                                        break; // Выходим из цикла, дело сделано
                                     }
-                                }
-                            } catch (e) { /* не JSON */ }
+                                } catch (e) { console.error("Ошибка парсинга 'костыльного' JSON:", e); }
+                            }
                         }
                         if (calls.length === 0) {
                             simpleSpeech = assistantMessage.content || "";
