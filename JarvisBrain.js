@@ -1,5 +1,7 @@
 const { Ollama } = require('ollama');
 const { spawn, exec, execSync, spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const { COMMANDS_MANIFEST } = require('./commands.config.js');
 class JarvisBrain {
     constructor(db, httpClient, player, musicController,jarvisContext ) {
@@ -9,6 +11,17 @@ class JarvisBrain {
         this.musicController = musicController;
         this.context = jarvisContext; 
         this.db.run("PRAGMA journal_mode = WAL;");
+    }
+    async logToFile(chatId, autor, input, result) {
+        const logPath = path.join(__dirname, 'jarvis_brain.log');
+        const timestamp = new Date().toLocaleString('ru-RU');
+        
+        // Форматируем текст, чтобы он не "расползался" из-за пробелов в коде
+        const logEntry = `[${timestamp}] ID: ${chatId} | ${autor}: "${input}"\n` + 
+                         `   └─ РЕЗУЛЬТАТ: ${result}\n` +
+                         `----------------------------------------------------------\n`;
+        
+        fs.appendFileSync(logPath, logEntry, 'utf8');
     }
     async saveToHistory(userId, role, content) {
         return new Promise((resolve, reject) => {
@@ -164,6 +177,12 @@ class JarvisBrain {
     
                     if (data) {
                         const isBlacklisted = BLACKLIST.includes(String(data.chatId));
+                        await this.logToFile(
+                            data.chatId, 
+                            data.autor || 'Неизвестный', 
+                            data.text || inputText, 
+                            "<<ВХОДЯЩЕЕ СООБЩЕНИЕ - НАЧАЛО ОБРАБОТКИ>>"
+                        );
                         // Проверка на технические признаки бота (replyMarkup или системные команды не от Сэра)
                         const isBot = data.text === '/start' || (inputText && inputText.replyMarkup);
                         
@@ -307,7 +326,12 @@ class JarvisBrain {
                                 }
 
                                 lastActionResult = typeof result === 'string' ? result : JSON.stringify(result);
-
+                                await this.logToFile(
+                                    data.chatId.toString(), 
+                                    `TOOL: ${functionName}`, 
+                                    JSON.stringify(args), 
+                                    `ВЫПОЛНЕНО: ${lastActionResult}`
+                                );
                                 // ОБЯЗАТЕЛЬНО отправляем результат обратно нейронке
                                 messages.push({
                                     role: 'tool',
@@ -338,7 +362,14 @@ class JarvisBrain {
                     }
                 }
                 // 4. ФИНАЛЬНАЯ ОБРАБОТКА (ВНЕ ЦИКЛА)
-                simpleSpeech = simpleSpeech.replace(/<\|.*?\|>/g, '').trim();
+                // simpleSpeech = simpleSpeech.replace(/<\|.*?\|>/g, '').trim();
+                // simpleSpeech = simpleSpeech.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<\|.*?\|>/g, '').trim();
+                simpleSpeech = simpleSpeech
+                .replace(/<think>[\s\S]*?<\/think>/g, '') // Убираем мысли
+                .replace(/<\|.*?\|>/g, '')                // Убираем токены
+                .replace(/^ronger/i, '')                  // Убираем этот странный префикс
+                .trim();
+
 
                 // Улучшенная логика: если ИИ не выдал текст (например, застрял на чтении файла)
                 if (!simpleSpeech && lastActionResult) {
@@ -354,6 +385,15 @@ class JarvisBrain {
                     }
                 }
 
+                if (!simpleSpeech) {
+                    await this.logToFile(
+                        data?.chatId || 'SYSTEM',
+                        data?.autor || 'SYSTEM',
+                        inputText,
+                        `КРИТИЧЕСКИЙ ПРОПУСК: Текст ответа пуст. Последнее действие: ${lastActionResult}`
+                    );
+                }
+
                 // Если всё равно пусто, но мы прошли все шаги
                 if (!simpleSpeech && currentStep >= maxSteps) {
                     simpleSpeech = "Анализ файла занимает много времени. Мне продолжить изучение следующих строк?";
@@ -361,6 +401,12 @@ class JarvisBrain {
 
                 // 5. ОТПРАВКА И ОЗВУЧКА
                 if (isSystem && data && simpleSpeech) {
+                    await this.logToFile(
+                        data.chatId.toString(), 
+                        data.autor || 'Неизвестный', 
+                        inputText, 
+                        `Ответ сформирован: "${simpleSpeech}"`
+                    );
                     // 1. Сначала сохраняем в историю БД, чтобы getChatContext увидел это при следующем запросе
                     // await this.saveToHistory(data.chatId.toString(), 'assistant', simpleSpeech);
                     // console.log(`[Jarvis] Ответ для внешнего пользователя ${data.chatId.toString()} сохранен в БД.`);
@@ -368,7 +414,9 @@ class JarvisBrain {
                     // await this.context.bitrix.sendMessage(data.chatId.toString(), simpleSpeech);
                     return ""; 
                 }
-
+                if (!simpleSpeech && lastActionResult) {
+                    simpleSpeech = "Я выполнил запрос. Вот что получилось: " + lastActionResult;
+                }
                 if (simpleSpeech && !isSystem) {
                     // Для голосового помощника
                     console.log(`[Jarvis] Озвучиваю: ${simpleSpeech}`);
