@@ -102,8 +102,8 @@ class JarvisBrain {
         return new Promise(async (resolve, reject) => {
             try {
                 let myData = {
-                    phone: '+79526045352',
-                    mail: 'vik-viktor@bk.ru',
+                    phone: '+**********',
+                    mail: '***********',
                     info: 'для связи используйте тнлнграмм'
                 };
                 let status = await this.getUserStatus();
@@ -256,7 +256,7 @@ class JarvisBrain {
                 const ollama = new Ollama({
                     host: 'https://ollama.com',
                     headers: { 
-                        'Authorization': 'Bearer db96c3e0b33f459f8c0b8fe10acfd00c.lEGugu4Ov0ldvXGzXE5Nkekp' 
+                        'Authorization': 'Bearer ******************************.***************************************' 
                     }
                 });
                 // --- НАЧАЛО АВТОНОМНОГО ЦИКЛА (ДЛЯ ЧТЕНИЯ И ЗАПИСИ) ---
