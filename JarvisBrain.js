@@ -4,14 +4,41 @@ const fs = require('fs');
 const path = require('path');
 const { COMMANDS_MANIFEST } = require('./commands.config.js');
 class JarvisBrain {
-    constructor(db, httpClient, player, musicController,jarvisContext ) {
+    constructor(db, httpClient, player, musicController,jarvisContext, wss) {
         this.db = db;
         this.http = httpClient;
         this.player = player;
         this.musicController = musicController;
         this.context = jarvisContext; 
+        this.wss = wss; 
+        Object.assign(this, jarvisContext);
         this.db.run("PRAGMA journal_mode = WAL;");
     }
+    broadcastLog(userId, role, content) {
+        if (!this.wss) return;
+
+        // Формируем дату точно так же, как она лежит в БД: YYYY-MM-DD HH:mm:ss
+        const now = new Date();
+        const timestamp = now.getFullYear() + '-' + 
+            String(now.getMonth() + 1).padStart(2, '0') + '-' + 
+            String(now.getDate()).padStart(2, '0') + ' ' + 
+            String(now.getHours()).padStart(2, '0') + ':' + 
+            String(now.getMinutes()).padStart(2, '0') + ':' + 
+            String(now.getSeconds()).padStart(2, '0');
+
+        const payload = JSON.stringify({
+            type: 'jarvis_msg',
+            userId: String(userId),
+            role: role,
+            content: content,
+            timestamp: timestamp // Отправляем готовую строку
+        });
+
+        this.wss.clients.forEach(client => {
+            if (client.readyState === 1) client.send(payload);
+        });
+    }
+
     async logToFile(chatId, autor, input, result) {
         const logPath = path.join(__dirname, 'jarvis_brain.log');
         const timestamp = new Date().toLocaleString('ru-RU');
@@ -25,22 +52,91 @@ class JarvisBrain {
     }
     async saveToHistory(userId, role, content) {
         return new Promise((resolve, reject) => {
-            this.db.run(
-                "INSERT INTO conversation_history (user_id, role, content) VALUES (?, ?, ?)",
-                [userId, role, content],
-                (err) => err ? reject(err) : resolve()
-            );
+            // 'localtime' прибавит +3 часа автоматически к текущему времени
+            const sql = `INSERT INTO conversation_history (user_id, role, content, timestamp) 
+                         VALUES (?, ?, ?, datetime('now', 'localtime'))`;
+            
+            this.db.run(sql, [String(userId), role, content], (err) => {
+                if (err) return reject(err);
+                console.log(`[DB Debug] Записано в базу (МСК): ${role}`);
+                resolve();
+            });
         });
     }
 
     async getChatContext(userId) {
         return new Promise((resolve, reject) => {
+            // Используем datetime(timestamp, 'localtime') — это магия SQLite
             this.db.all(
-                "SELECT role, content FROM conversation_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT 10",
+                "SELECT role, content, datetime(timestamp, 'localtime') as local_time FROM conversation_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT 10",
                 [userId],
                 (err, rows) => {
                     if (err) return reject(err);
-                    resolve(rows ? rows.reverse() : []);
+                    // Берем local_time, который уже +3 часа (или сколько у вас на сервере)
+                    const history = rows ? rows.reverse().map(m => `[${m.local_time}] ${m.role}: ${m.content}`) : [];
+                    resolve(history);
+                }
+            );
+        });
+    }
+    // Внутри класса JarvisBrain
+    async initKnowledgeBase() {
+        return new Promise((resolve, reject) => {
+            this.db.serialize(() => {
+                // 1. Ваша виртуальная таблица для поиска (RAG)
+                this.db.run(`
+                    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_index 
+                    USING fts5(topic, keywords, solution, tokenize="unicode61")
+                `);
+
+                // 2. Таблица для логов задач из Jira (исправляем ошибку)
+                this.db.run(`
+                    CREATE TABLE IF NOT EXISTS helpdesktasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        tascId TEXT,
+                        tascKey TEXT,
+                        content TEXT,
+                        status TEXT,
+                        dateCreate TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                `, (err) => {
+                    if (err) {
+                        console.error("❌ Ошибка инициализации БД:", err);
+                        reject(err);
+                    } else {
+                        console.log("✅ База знаний и таблица задач готовы.");
+                        resolve();
+                    }
+                });
+            });
+        });
+    }
+    async getTechnicalContext(userText) {
+        return new Promise((resolve) => {
+            // 1. Очищаем текст и разбиваем на отдельные слова (от 3-х символов)
+            const words = userText.toLowerCase()
+                .replace(/[^\w\sа-яё]/gi, ' ')
+                .split(/\s+/)
+                .filter(w => w.length >= 3);
+
+            if (words.length === 0) return resolve("");
+
+            // 2. Формируем запрос вида: "слово1* OR слово2* OR слово3*"
+            const searchQuery = words.map(w => `${w}*`).join(' OR ');
+
+            // 3. Выполняем поиск с сортировкой по релевантности (rank)
+            this.db.all(
+                `SELECT solution FROM knowledge_index WHERE knowledge_index MATCH ? ORDER BY rank LIMIT 1`,
+                [searchQuery],
+                (err, rows) => {
+                    if (err) {
+                        console.error("[SQLite Search Error]:", err);
+                        resolve("");
+                    } else if (rows && rows.length > 0) {
+                        resolve(rows[0].solution);
+                    } else {
+                        resolve("");
+                    }
                 }
             );
         });
@@ -102,8 +198,8 @@ class JarvisBrain {
         return new Promise(async (resolve, reject) => {
             try {
                 let myData = {
-                    phone: '+**********',
-                    mail: '***********',
+                    phone: '+79526045352',
+                    mail: 'vik-viktor@bk.ru',
                     info: 'для связи используйте тнлнграмм'
                 };
                 let status = await this.getUserStatus();
@@ -168,11 +264,13 @@ class JarvisBrain {
                 const dbAll = (sql, params) => new Promise((res, rej) => {
                     this.db.all(sql, params, (err, rows) => err ? rej(err) : res(rows));
                 });
-
-               let currentInput = inputText;
-               console.log(isSystem)
-               console.log(data)
+// ${userHistory.map(m => `${m.role}: ${m.content}`).join('\n')}
+                const now = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
+                let currentInput = inputText;
+                console.log(isSystem)
+                console.log(data)
                 if (isSystem && data) {
+                    this.broadcastLog(data.chatId, 'user', data.text);
                     const BLACKLIST = ['7622450272', '6372251001']; // Список ID ботов/каналов
     
                     if (data) {
@@ -195,25 +293,53 @@ class JarvisBrain {
                     this.context.lastPlatform = data.platform; 
                     await this.saveToHistory(userId, 'user', data.text);
                     const userHistory = await this.getChatContext(userId);
+                    const techContext = await this.getTechnicalContext(data.text);
+                    // 2. Формируем итоговый промпт, внедряя тех. контекст
                     
-                    currentInput = `[INCOMING_MESSAGE]
+                    const formattedHistory = userHistory.map(line => {
+                        return {
+                            role: line.includes('assistant:') ? 'assistant' : 'user',
+                            content: line
+                        };
+                    });
+                    currentInput = `
+                    [SYSTEM] Текущее дата и время: ${now}
+                    [INCOMING_MESSAGE] 
                     Платформа: ${data.platform}, 
                     Отправитель: ${data.autor}, 
                     ID пользователя: ${userId}. 
                     Текст: "${data.text}".
 
-                    История переписки с ЭТИМ пользователем:
-                    ${userHistory.map(m => `${m.role}: ${m.content}`).join('\n')}
+                    ${techContext ? `=== СПРАВОЧНАЯ ИНФОРМАЦИЯ ИЗ ТВОЕЙ БАЗЫ ЗНАНИЙ (ИСПОЛЬЗУЙ ЭТО) ===\n${techContext}\n================================================` : "СПРАВОЧНАЯ ИНФОРМАЦИЯ: В локальной базе знаний ответов на этот вопрос нет."}
 
                     ИНСТРУКЦИЯ ДЛЯ ТЕБЯ (ДЖАРВИС):
-                    1. Это сообщение НЕ от Виктора. Это сообщение ИЗВНЕ.
-                    2. Твой ответ должен уйти ТОЛЬКО в мессенджер через функцию relayExternalMessage (target: "${userId}").
-                    3. ЗАПРЕЩЕНО использовать notifySir для ответа на этот вопрос.
-                    4. Отвечай от имени ассистента Виктора. Будь вежлив с ${data.autor}.
-                    ЗАПРЕЩЕНО читать показывать и изменять код, в функции секретаря это не входит...
-                    НИКОГДА не пиши JSON в тексте ответа. Используй инструменты (tools) только через системный вызов функций. Если хочешь отправить сообщение пользователю — вызывай relayExternalMessage.
-                    Всегда только русский язык
-                `;
+                    1. ТЫ — ТЕХНИЧЕСКИЙ АССИСТЕНТ ВИКТОРА (РУКОВОДИТЕЛЯ IT-ОТДЕЛА). Отвечай строго от имени ассистента.
+                    2. ТВОЯ КОМПЕТЕНЦИЯ: Только IT-вопросы, программное обеспечение, базы данных, сервера, код и технические задачи.
+                    3. КРИТИЧЕСКИЙ ЗАПРЕЩАЮЩИЙ ФИЛЬТР: 
+                       - Ты НЕ хозяйственник и НЕ завхоз. 
+                       - Бытовые проблемы (унитазы, туалеты, двери, лампочки, мебель, уборка) КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО заносить в Jira.
+                       - Если вопрос касается быта, ответь вежливо: "Я ассистент IT-отдела и не имею доступа к хозяйственным службам. Пожалуйста, обратитесь в АХО или к завхозу."
+
+                    4. АЛГОРИТМ ТВОИХ ДЕЙСТВИЙ:
+                       - ШАГ 1: Если в 'СПРАВОЧНОЙ ИНФОРМАЦИИ' выше есть ответ — используй его для ответа через relayExternalMessage.
+                       - ШАГ 2: Если это IT-вопрос (баг, доработка, сервер), но в базе знаний пусто — ОБЯЗАТЕЛЬНО вызови инструмент 'createJiraIssue'. 
+                       - ШАГ 3: После вызова инструмента, сообщи пользователю номер созданного тикета.
+                       - ШАГ 4: Если вопрос НЕ про IT — не вызывай инструменты, просто ответь текстом об отказе.
+
+                    5. ТЕХНИЧЕСКИЕ ПРАВИЛА:
+                       - Ответ отправляй ТОЛЬКО через функцию relayExternalMessage (target: "${userId}").
+                       - ЗАПРЕЩЕНО использовать notifySir для внешних ответов.
+                       - НИКОГДА не пиши JSON в тексте ответа пользователю. 
+                       - Всегда только русский язык.
+                       - Если в 'СПРАВОЧНОЙ ИНФОРМАЦИИ' написано "Виктор занят", так и передай.
+
+                    ИНСТРУКЦИЯ ПО СТАТУСАМ:
+                        Если пользователь спрашивает про конкретный тикет (например, HDESK-286):
+                        Сначала проверь его наличие в истории переписки.
+                        Если номер тикета валидный, ОБЯЗАТЕЛЬНО вызови инструмент getJiraStatus.
+                        ЗАПРЕЩЕНО выдумывать фамилии исполнителей и сроки. Говори только то, что прислало API Jira.
+
+                    ПРИСТУПАЙ. ОТВЕТЬ ПОЛЬЗОВАТЕЛЮ ${data.autor}:`;
                 }
                     // Если ОЧЕНЬ НАСТОЙЧИВО просят мой номер телефона то вот контакты мои: ${contactsString}`; // <-- ИСПОЛЬЗУЕМ contactsString
                 let messages = [];
@@ -223,13 +349,33 @@ class JarvisBrain {
                     // --- ВНЕШНИЙ МЕССЕНДЖЕР ---
                     // Мы НЕ берем общую историю из БД (rawRows). 
                     // Мы берем ТОЛЬКО историю этого конкретного человека (userHistory)
+                    // const userId = data.chatId.toString();
+                    // const userHistory = await this.getChatContext(userId); // Твой метод получения истории по ID
+
+                    // messages = [
+                    //     ...jarvisConversationHistory, // Системный промпт
+                    //     ...formattedHistory.slice(-5),     // История этого чата
+                    //     { role: "user", content: currentInput } // СТРОГО один объект с инструкцией
+                    // ];
                     const userId = data.chatId.toString();
-                    const userHistory = await this.getChatContext(userId); // Твой метод получения истории по ID
+                    const userHistory = await this.getChatContext(userId); // Здесь массив строк с [датами]
+
+                    // Превращаем историю из БД в объекты для Ollama
+                    const historyObjects = userHistory.map(line => {
+                        const isAssistant = line.includes('assistant:');
+                        return {
+                            role: isAssistant ? 'assistant' : 'user',
+                            content: line // Здесь уже есть дата внутри строки
+                        };
+                    });
 
                     messages = [
-                        ...jarvisConversationHistory, // Системный промпт
-                        ...userHistory.slice(-5),     // История этого чата
-                        { role: "user", content: currentInput } // СТРОГО один объект с инструкцией
+                        ...jarvisConversationHistory, // Твои системные инструкции (роль ассистента, Jira и т.д.)
+                        ...historyObjects,            // Реальная история из базы (последние 5-10 сообщений)
+                        { 
+                            role: "user", 
+                            content: `[ТЕКУЩЕЕ ВРЕМЯ: ${now}]\n\n НОВОЕ СООБЩЕНИЕ:\n${currentInput}` 
+                        } 
                     ];
                     
                     console.log(`[Jarvis Brain] Контекст сформирован для внешнего ID: ${userId}`);
@@ -256,7 +402,7 @@ class JarvisBrain {
                 const ollama = new Ollama({
                     host: 'https://ollama.com',
                     headers: { 
-                        'Authorization': 'Bearer ******************************.***************************************' 
+                        'Authorization': 'Bearer db96c3e0b33f459f8c0b8fe10acfd00c.lEGugu4Ov0ldvXGzXE5Nkekp' 
                     }
                 });
                 // --- НАЧАЛО АВТОНОМНОГО ЦИКЛА (ДЛЯ ЧТЕНИЯ И ЗАПИСИ) ---
@@ -430,6 +576,7 @@ class JarvisBrain {
                     );
                     if (!isRelayExecuted) {
                         console.log(`[Jarvis] Прямая отправка текста: ${simpleSpeech}`);
+                        this.broadcastLog(data.chatId, 'assistant', simpleSpeech);
                         await this.context.bitrix.sendMessage(data.chatId.toString(), simpleSpeech);
                     } else {
                         console.log(`[Jarvis] Сообщение уже ушло через relay, повторно не шлем.`);
