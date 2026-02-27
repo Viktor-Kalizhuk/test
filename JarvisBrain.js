@@ -463,7 +463,7 @@ class JarvisBrain {
                 const ollama = new Ollama({
                     host: 'https://ollama.com',
                     headers: { 
-                        'Authorization': 'Bearer db96c3e0b33f459f8c0b8fe10acfd00c.lEGugu4Ov0ldvXGzXE5Nkekp' 
+                        'Authorization': 'Bearer *************************************' 
                     }
                 });
                 // --- НАЧАЛО АВТОНОМНОГО ЦИКЛА (ДЛЯ ЧТЕНИЯ И ЗАПИСИ) ---
