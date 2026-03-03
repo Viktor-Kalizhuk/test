@@ -361,6 +361,7 @@ class JarvisBrain {
 
                 // Формируем строку контактов для ИИ
                 const contactsList = contacts.map(c => `${c.display_name} (ID: ${c.tg_id})`).join(', ');
+                const calendarGrid = getCalendarGrid();
                 let jarvisConversationHistory = [
                         {
                         role: 'system', 
@@ -454,7 +455,7 @@ class JarvisBrain {
                         };
                     });
                     
-                    const calendarGrid = getCalendarGrid(); // Генерируем сетку на лету
+                    
                     // ПРИСТУПАЙ. ОТВЕТЬ ПОЛЬЗОВАТЕЛЮ ${data.autor}:`;
                     console.log(now)
                     console.log(`${now} (${new Date().toLocaleDateString('ru-RU', {weekday: 'long'})}, ${new Date().toLocaleDateString('ru-RU')})`)
