@@ -523,32 +523,40 @@ class JarvisBrain {
                 if (isSystem && data) {
                     const userId = data.chatId.toString();
                     const userHistory = await this.getChatContext(userId); 
-
-                    const historyObjects = userHistory.map(line => {
-                        const isAssistant = line.includes('assistant:');
-                        // Очищаем только технический префикс роли
-                        const cleanContent = line.replace(/^(assistant|user):\s*/i, '').trim();
-                        return {
-                            role: isAssistant ? 'assistant' : 'user',
-                            content: cleanContent 
-                        };
-                    });
-
-                    // ФОРМИРУЕМ ЧИСТЫЙ МАССИВ
+                
+                    // Очищаем историю от системного мусора и длинных кодов
+                    const cleanHistory = userHistory
+                        .map(line => {
+                            const isAssistant = line.includes('assistant:');
+                            const content = line.replace(/^(assistant|user):\s*/i, '').trim();
+                            return { role: isAssistant ? 'assistant' : 'user', content };
+                        })
+                        .filter(msg => msg.content.length < 500 && !msg.content.includes('include <stdio.h>')) // Выкидываем галлюцинации
+                        .slice(-6); 
+                
+                    // Формируем ОПЕРАТИВНЫЙ контекст (только данные!)
+                    const currentContext = `
+                [ДАННЫЕ]
+                Время: ${now} (${new Date().toLocaleDateString('ru-RU', {weekday: 'long'})})
+                Сетка: ${calendarGrid}
+                Сообщение от ${data.autor}: "${data.text}"
+                ${techContext ? `[БАЗА ЗНАНИЙ]: ${techContext}` : "[БАЗА ЗНАНИЙ]: Информации нет."}
+                    `.trim();
+                
                     messages = [
-                        // 1. Системные инструкции (ДОЛЖНЫ БЫТЬ role: "system")
-                        ...jarvisConversationHistory.map(m => ({ ...m, role: 'system' })), 
-                        
-                        // 2. История переписки (последние 6 сообщений вполне достаточно)
-                        ...historyObjects.slice(-6), 
-                        
-                        // 3. ТОЛЬКО входящее сообщение без лишних "ИНСТРУКЦИЙ" внутри контента
-                        { 
-                            role: "user", 
-                            content: `[Дата: ${now}] Сообщение от пользователя ${userId}: ${currentInput}` 
-                        } 
+                        { role: 'system', content: JARVIS_SYSTEM_RULES },
+                        ...cleanHistory,
+                        { role: 'user', content: currentContext }
                     ];
-                    console.log(`[Jarvis Brain] Контекст сформирован для внешнего ID: ${userId}`);
+                
+                } else {
+                    // Логика для обычного чата (аналогично разделяем)
+                    const rawRows = await dbAll("SELECT role, content FROM (SELECT * FROM messages ORDER BY id DESC LIMIT 10) ORDER BY id ASC");
+                    messages = [
+                        { role: 'system', content: JARVIS_SYSTEM_RULES },
+                        ...rawRows.map(row => ({ role: row.role, content: row.content })),
+                        { role: 'user', content: inputText }
+                    ];
                 }
                  else {
                     const rawRows = await dbAll("SELECT role, content FROM (SELECT * FROM messages ORDER BY id DESC LIMIT 15) ORDER BY id ASC");
